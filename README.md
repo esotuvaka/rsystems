@@ -12,3 +12,9 @@ The various systems that will be implemented (not necessarily in order):
 - Secret Store
 - Database (?)
 - Object Store (?)
+
+## Add a new crate to the workspace
+
+```bash
+cargo new --vcs none <cratename>
+```
