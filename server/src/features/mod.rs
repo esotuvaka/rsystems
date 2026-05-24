@@ -1,5 +1,4 @@
-pub mod package;
-pub mod route;
-pub mod shipment;
-pub mod vehicle;
-pub mod warehouse;
+pub mod fleet;
+pub mod fulfillment;
+pub mod operations;
+pub mod routing;

@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 pub type WarehouseId = Uuid;
