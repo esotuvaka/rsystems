@@ -22,6 +22,9 @@ enum CacheErr {
 }
 
 struct Store {
+    // TODO: for us to efficiently store the data we need to use a Val type
+    // so we can include TTL and other metadata
+
     // TODO: convert from storing KV as string:string into bytes:bytes
     str_items: Arc<Mutex<HashMap<String, String>>>,
     // PERF: may be able to use String -> RLE -> bytes for store size
@@ -48,7 +51,29 @@ impl Store {
         }
     }
 
-    async fn set(self, key: &str, val: &str, exp_ms: Option<i32>) -> Result<(), CacheErr> {}
+    async fn set(self, key: &str, val: &str, exp_ms: Option<i32>) -> Result<(), CacheErr> {
+        match self
+            .str_items
+            .lock_owned()
+            .await
+            .insert(key.to_owned(), val.to_owned())
+        {
+            Some(_old_val) => Ok(()),
+            None => Ok(()),
+        }
+    }
+
+    async fn del(self, key: &str) -> Result<(), CacheErr> {
+        match self.str_items.lock_owned().await.remove(key) {
+            Some(_val) => Ok(()),
+            None => Err(CacheErr::Request("NOT FOUND".to_string())),
+        }
+    }
+
+    // NOTE: no internal err handling but I'm suspicious that this is infallible
+    async fn flush(self) {
+        let _ = self.str_items.lock_owned().await.drain();
+    }
 }
 
 #[tokio::main]
