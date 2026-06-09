@@ -16,6 +16,7 @@ type Byte = u8;
 type Bytes = Vec<Byte>;
 
 enum CacheErr {
+    Parse(String),
     Network(String),
     Request(String),
     Response(String),
@@ -89,6 +90,9 @@ async fn main() {
             Ok((mut stream, _)) => {
                 println!("accepted new connection");
 
+                // PERF: there's overhead here of cloning the store on each new accepted TCP stream
+                // and creating a tokio task. Ideally we'd have a task pool that can reuse existing
+                // threads efficiently
                 let store_clone = Arc::clone(&cache_store);
                 tokio::spawn(async move {
                     let mut buf = [0; 512];
@@ -105,6 +109,8 @@ async fn main() {
                     // Process incoming data
                     let response = process_command(&store_clone, &data).await;
 
+                    // TODO: write something like Axum's `IntoResponse` to convert command responses
+                    // and errors into structured responses
                     stream.write_all(response.as_bytes()).await.unwrap();
                 });
             }
@@ -115,12 +121,86 @@ async fn main() {
     }
 }
 
-/// Process incoming command and generate response
-async fn process_command(store: &Store, data: &[u8]) -> String {
-    let input = String::from_utf8_lossy(data).to_string();
-    let command = parser::parse(&input).await;
+enum Command {
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        val: String,
+        exp: Option<i32>,
+    },
+    Del {
+        key: String,
+    },
+    FlushAll,
+}
 
-    match command {
+/// 1min
+const DEFAULT_TTL_MS: i32 = 60 * 1000;
+
+impl TryFrom<&str> for Command {
+    type Error = CacheErr;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let mut parts = value.split_whitespace().into_iter();
+        let maybe_cmd = parts.next();
+        match maybe_cmd {
+            None => Err(CacheErr::Request("EMPTY CMD".to_string())),
+            Some(cmd) => match cmd.to_uppercase().trim() {
+                "GET" => {
+                    let key = match parts.next() {
+                        Some(k) => k.to_string(),
+                        None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
+                    };
+                    Ok(Command::Get { key })
+                }
+                "SET" => {
+                    let key = match parts.next() {
+                        Some(k) => k.to_string(),
+                        None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
+                    };
+                    let val = match parts.next() {
+                        Some(v) => v.to_string(),
+                        None => return Err(CacheErr::Request("EMPTY SET VALUE".to_string())),
+                    };
+                    let ttl_ms = match parts.next() {
+                        Some(t) => Some(t.parse::<i32>().unwrap_or(DEFAULT_TTL_MS)),
+                        None => None,
+                    };
+                    Ok(Command::Set {
+                        key,
+                        val,
+                        exp: ttl_ms,
+                    })
+                }
+                "DEL" => {
+                    let key = match parts.next() {
+                        Some(k) => k.to_string(),
+                        None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
+                    };
+                    Ok(Command::Del { key })
+                }
+                "FLUSHALL" => Ok(Command::FlushAll),
+                _ => {
+                    eprintln!("INVALID CMD: {}", cmd);
+                    return Err(CacheErr::Request("INVALID CMD".to_string()));
+                }
+            },
+        }
+    }
+}
+
+fn parse(input: &str) -> Result<Command, CacheErr> {
+    Ok(Command::try_from(input)?)
+}
+
+/// Process incoming command and generate response
+async fn process_command(store: &Store, data: &[u8]) -> Result<String, CacheErr> {
+    let input = String::from_utf8_lossy(data).to_string();
+    let cmd = parse(&input)?;
+
+    match cmd {
         Command::Get { key } => {
             let response = store.get(&key).await;
             response.to_string()
