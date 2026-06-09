@@ -5,9 +5,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+mod constants;
 mod parser;
 mod protocol;
 mod store;
+
+use constants::DEFAULT_TTL_MS;
 
 // Alias for int type to differentiate
 type Byte = u8;
@@ -137,9 +140,6 @@ enum Command {
     },
     FlushAll,
 }
-
-/// 1min
-const DEFAULT_TTL_MS: i32 = 60 * 1000;
 
 impl TryFrom<&str> for Command {
     type Error = CacheErr;
