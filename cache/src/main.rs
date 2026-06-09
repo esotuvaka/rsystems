@@ -15,6 +15,7 @@ type Byte = u8;
 // Allows us to implement custom methods over the type like scans, windows, RLE, etc.
 type Bytes = Vec<Byte>;
 
+#[derive(Debug, Clone, PartialEq)]
 enum CacheErr {
     Parse(String),
     Network(String),
@@ -107,11 +108,11 @@ async fn main() {
                     }
 
                     // Process incoming data
-                    let response = process_command(&store_clone, &data).await;
+                    // let response = process_command(&store_clone, &data).await;
 
                     // TODO: write something like Axum's `IntoResponse` to convert command responses
                     // and errors into structured responses
-                    stream.write_all(response.as_bytes()).await.unwrap();
+                    // stream.write_all(response.as_bytes()).await.unwrap();
                 });
             }
             Err(e) => {
@@ -121,6 +122,7 @@ async fn main() {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 enum Command {
     Get {
         key: String,
@@ -151,7 +153,7 @@ impl TryFrom<&str> for Command {
                 "GET" => {
                     let key = match parts.next() {
                         Some(k) => k.to_string(),
-                        None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
+                        None => return Err(CacheErr::Request("EMPTY GET KEY".to_string())),
                     };
                     Ok(Command::Get { key })
                 }
@@ -195,24 +197,61 @@ fn parse(input: &str) -> Result<Command, CacheErr> {
     Ok(Command::try_from(input)?)
 }
 
-/// Process incoming command and generate response
-async fn process_command(store: &Store, data: &[u8]) -> Result<String, CacheErr> {
-    let input = String::from_utf8_lossy(data).to_string();
-    let cmd = parse(&input)?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    match cmd {
-        Command::Get { key } => {
-            let response = store.get(&key).await;
-            response.to_string()
-        }
-        Command::Set { key, value, ttl } => {
-            let response = store.set(&key, &value, ttl).await;
-            response.to_string()
-        }
-        Command::Del { key } => {
-            let response = store.del(&key).await;
-            response.to_string()
-        }
-        Command::FlushAll => Response::Ok("OK".to_string()).to_string(),
+    #[test]
+    fn fail_parse_empty_cmd() {
+        let cmd = parse("");
+        assert_eq!(cmd, Err(CacheErr::Request("EMPTY CMD".to_string())));
+
+        let cmd = parse(" ");
+        assert_eq!(cmd, Err(CacheErr::Request("EMPTY CMD".to_string())))
+    }
+
+    #[test]
+    fn parse_valid_get() {
+        let cmd = parse("GET 123");
+        assert_eq!(
+            cmd,
+            Ok(Command::Get {
+                key: "123".to_string()
+            })
+        )
+    }
+
+    #[test]
+    fn parse_invalid_get() {
+        let cmd = parse("GET");
+        assert_eq!(cmd, Err(CacheErr::Request("EMPTY GET KEY".to_string())));
+
+        let cmd = parse("GET ");
+        assert_eq!(cmd, Err(CacheErr::Request("EMPTY GET KEY".to_string())));
+
+        let cmd = parse("GET123");
+        assert_eq!(cmd, Err(CacheErr::Request("INVALID CMD".to_string())))
     }
 }
+
+// Process incoming command and generate response
+// async fn process_command(store: &Store, data: &[u8]) -> Result<String, CacheErr> {
+//     let input = String::from_utf8_lossy(data).to_string();
+//     let cmd = parse(&input)?;
+
+//     match cmd {
+//         Command::Get { key } => {
+//             let response = store.get(&key).await;
+//             response.to_string()
+//         }
+//         Command::Set { key, value, ttl } => {
+//             let response = store.set(&key, &value, ttl).await;
+//             response.to_string()
+//         }
+//         Command::Del { key } => {
+//             let response = store.del(&key).await;
+//             response.to_string()
+//         }
+//         Command::FlushAll => Response::Ok("OK".to_string()).to_string(),
+//     }
+// }
