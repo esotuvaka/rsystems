@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::sync::Arc;
+use std::vec;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -26,6 +28,13 @@ enum CacheErr {
     Response(String),
 }
 
+impl Display for CacheErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
+
+#[derive(Debug, Clone)]
 struct Store {
     // TODO: for us to efficiently store the data we need to use a Val type
     // so we can include TTL and other metadata
@@ -84,7 +93,7 @@ impl Store {
 #[tokio::main]
 async fn main() {
     // Clone store for use in spawned tasks
-    let cache_store = Arc::new(Store::new());
+    let cache_store = Arc::new(Mutex::new(Store::new()));
     let listener = TcpListener::bind("127.0.0.1:6379").await.unwrap();
 
     loop {
@@ -97,7 +106,7 @@ async fn main() {
                 // PERF: there's overhead here of cloning the store on each new accepted TCP stream
                 // and creating a tokio task. Ideally we'd have a task pool that can reuse existing
                 // threads efficiently
-                let store_clone = Arc::clone(&cache_store);
+                let store = cache_store.clone();
                 tokio::spawn(async move {
                     let mut buf = [0; 512];
                     let mut data = Vec::new();
@@ -110,12 +119,19 @@ async fn main() {
                         data.extend_from_slice(&buf[..read_count]);
                     }
 
-                    // Process incoming data
-                    // let response = process_command(&store_clone, &data).await;
+                    let response = match process_command(store, &data).await {
+                        Ok(r) => r,
+                        Err(e) => Some(e.to_string()),
+                    };
+
+                    let data = match response {
+                        Some(r) => r.as_bytes().to_owned(),
+                        None => Vec::new(),
+                    };
 
                     // TODO: write something like Axum's `IntoResponse` to convert command responses
                     // and errors into structured responses
-                    // stream.write_all(response.as_bytes()).await.unwrap();
+                    stream.write_all(&data).await.unwrap();
                 });
             }
             Err(e) => {
@@ -133,7 +149,7 @@ enum Command {
     Set {
         key: String,
         val: String,
-        exp: Option<i32>,
+        exp_ms: Option<i32>,
     },
     Del {
         key: String,
@@ -149,46 +165,40 @@ impl TryFrom<&str> for Command {
         let maybe_cmd = parts.next();
         match maybe_cmd {
             None => Err(CacheErr::Request("EMPTY CMD".to_string())),
-            Some(cmd) => match cmd.to_uppercase().trim() {
-                "GET" => {
-                    let key = match parts.next() {
-                        Some(k) => k.to_string(),
-                        None => return Err(CacheErr::Request("EMPTY GET KEY".to_string())),
-                    };
-                    Ok(Command::Get { key })
-                }
-                "SET" => {
-                    let key = match parts.next() {
-                        Some(k) => k.to_string(),
-                        None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
-                    };
-                    let val = match parts.next() {
-                        Some(v) => v.to_string(),
-                        None => return Err(CacheErr::Request("EMPTY SET VALUE".to_string())),
-                    };
-                    let ttl_ms = match parts.next() {
-                        Some(t) => Some(t.parse::<i32>().unwrap_or(DEFAULT_TTL_MS)),
-                        None => None,
-                    };
-                    Ok(Command::Set {
+            Some(cmd) => {
+                // NOTE: these are just the default command parts. Some commands may have different
+                // uses and need different variable names for the various command parts[0, 1, etc.]
+
+                // FIXME: these shouldn't return the error but should be Options that each command
+                // branch can handle independently
+                let key = match parts.next() {
+                    Some(k) => k.to_string(),
+                    None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
+                };
+                let val = match parts.next() {
+                    Some(v) => v.to_string(),
+                    None => return Err(CacheErr::Request("EMPTY SET VALUE".to_string())),
+                };
+                let ttl_ms = match parts.next() {
+                    Some(t) => Some(t.parse::<i32>().unwrap_or(DEFAULT_TTL_MS)),
+                    None => None,
+                };
+
+                match cmd.to_uppercase().trim() {
+                    "GET" => Ok(Command::Get { key }),
+                    "SET" => Ok(Command::Set {
                         key,
                         val,
-                        exp: ttl_ms,
-                    })
+                        exp_ms: ttl_ms,
+                    }),
+                    "DEL" => Ok(Command::Del { key }),
+                    "FLUSHALL" => Ok(Command::FlushAll),
+                    _ => {
+                        eprintln!("INVALID CMD: {}", cmd);
+                        return Err(CacheErr::Request("INVALID CMD".to_string()));
+                    }
                 }
-                "DEL" => {
-                    let key = match parts.next() {
-                        Some(k) => k.to_string(),
-                        None => return Err(CacheErr::Request("EMPTY SET KEY".to_string())),
-                    };
-                    Ok(Command::Del { key })
-                }
-                "FLUSHALL" => Ok(Command::FlushAll),
-                _ => {
-                    eprintln!("INVALID CMD: {}", cmd);
-                    return Err(CacheErr::Request("INVALID CMD".to_string()));
-                }
-            },
+            }
         }
     }
 }
@@ -234,24 +244,30 @@ mod tests {
     }
 }
 
-// Process incoming command and generate response
-// async fn process_command(store: &Store, data: &[u8]) -> Result<String, CacheErr> {
-//     let input = String::from_utf8_lossy(data).to_string();
-//     let cmd = parse(&input)?;
+async fn process_command(
+    store: Arc<Mutex<Store>>,
+    data: &[u8],
+) -> Result<Option<String>, CacheErr> {
+    let input = String::from_utf8_lossy(data).to_string();
+    let cmd = parse(&input)?;
 
-//     match cmd {
-//         Command::Get { key } => {
-//             let response = store.get(&key).await;
-//             response.to_string()
-//         }
-//         Command::Set { key, value, ttl } => {
-//             let response = store.set(&key, &value, ttl).await;
-//             response.to_string()
-//         }
-//         Command::Del { key } => {
-//             let response = store.del(&key).await;
-//             response.to_string()
-//         }
-//         Command::FlushAll => Response::Ok("OK".to_string()).to_string(),
-//     }
-// }
+    match cmd {
+        Command::Get { key } => {
+            let response = store.lock().await.clone().get(&key).await?;
+            Ok(response)
+        }
+        Command::Set { key, val, exp_ms } => {
+            store.lock().await.clone().set(&key, &val, exp_ms).await?;
+            Ok(None)
+        }
+        Command::Del { key } => {
+            store.lock().await.clone().del(&key).await?;
+            Ok(None)
+        }
+        Command::FlushAll => {
+            store.lock().await.clone().flush().await;
+            Ok(None)
+        }
+        _ => return Err(CacheErr::Request("INVALID COMMAND".to_string())),
+    }
+}
