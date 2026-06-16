@@ -208,7 +208,7 @@ fn parse(input: &str) -> Result<Command, CacheErr> {
 }
 
 #[cfg(test)]
-mod tests {
+mod parse_command_tests {
     use super::*;
 
     #[test]
@@ -268,6 +268,25 @@ async fn process_command(
             store.lock().await.clone().flush().await;
             Ok(None)
         }
-        _ => return Err(CacheErr::Request("INVALID COMMAND".to_string())),
+    }
+}
+
+#[cfg(test)]
+mod process_command_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn process_get() {
+        let store = Arc::new(Mutex::new(Store::new()));
+        store
+            .lock()
+            .await
+            .clone()
+            .set("123", "TEST", None)
+            .await
+            .unwrap();
+
+        let data = store.lock().await.clone().get("123").await.unwrap();
+        assert_eq!(data, Some("TEST".to_string()))
     }
 }
